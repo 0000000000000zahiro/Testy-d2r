@@ -1,7 +1,6 @@
 package main
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -20,9 +19,6 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
-
-//go:embed static
-var staticFS embed.FS
 
 type User struct {
 	ID       uint   `gorm:"primaryKey"`
@@ -130,7 +126,6 @@ func main() {
 	initDB()
 	r := gin.Default()
 	r.Use(sessions.Sessions("d2rsession", store))
-	r.StaticFS("/static", http.FS(staticFS))
 
 	tmpl := template.Must(template.New("").Parse(d2rTemplate))
 	r.SetHTMLTemplate(tmpl)
@@ -156,7 +151,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("🚀 D2R Farm Tracker v2.1 gotowy na porcie %s", port)
+	log.Printf("🚀 D2R Farm Tracker v2.1 uruchomiony na http://localhost:%s", port)
 	r.Run(":" + port)
 }
 
@@ -172,13 +167,10 @@ func authMiddleware() gin.HandlerFunc {
 	}
 }
 
-// ==================== AUTH HANDLERS ====================
-func loginPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "layout", gin.H{"Title": "Logowanie", "Content": loginHTML})
-}
-func registerPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "layout", gin.H{"Title": "Rejestracja", "Content": registerHTML})
-}
+// ==================== AUTH ====================
+func loginPage(c *gin.Context) { c.HTML(http.StatusOK, "layout", gin.H{"Title": "Logowanie", "Content": loginHTML}) }
+func registerPage(c *gin.Context) { c.HTML(http.StatusOK, "layout", gin.H{"Title": "Rejestracja", "Content": registerHTML}) }
+
 func loginHandler(c *gin.Context) {
 	username := c.PostForm("username")
 	password := c.PostForm("password")
@@ -192,6 +184,7 @@ func loginHandler(c *gin.Context) {
 	session.Save()
 	c.Redirect(http.StatusFound, "/dashboard")
 }
+
 func registerHandler(c *gin.Context) {
 	username := c.PostForm("username")
 	password := c.PostForm("password")
@@ -203,6 +196,7 @@ func registerHandler(c *gin.Context) {
 	db.Create(&User{Username: username, Password: string(hashed)})
 	c.Redirect(http.StatusFound, "/login")
 }
+
 func logoutHandler(c *gin.Context) {
 	session := sessions.Default(c)
 	session.Clear()
@@ -210,10 +204,9 @@ func logoutHandler(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/login")
 }
 
-// ==================== DASHBOARD + STATS ====================
+// ==================== DASHBOARD ====================
 func dashboardHandler(c *gin.Context) {
 	userID := sessions.Default(c).Get("user_id").(uint)
-
 	var totalRuns, totalHR, totalUniques, totalSets int64
 	db.Model(&Run{}).Where("user_id = ?", userID).Count(&totalRuns)
 	db.Model(&Run{}).Where("user_id = ?", userID).Select("COALESCE(SUM(hr_count),0)").Scan(&totalHR)
@@ -232,10 +225,7 @@ func dashboardHandler(c *gin.Context) {
 					<div><div class="text-7xl font-black text-amber-400">%d</div><div class="text-xl tracking-widest">RUNÓW</div></div>
 					<div><div class="text-7xl font-black text-emerald-400">%d</div><div class="text-xl tracking-widest">HIGH RUNES</div></div>
 					<div><div class="text-7xl font-black text-amber-400">%.2f</div><div class="text-xl tracking-widest">HR / RUN</div></div>
-					<div>
-						<button onclick="startSession()" class="d2-btn px-10 py-6 text-2xl font-black tracking-widest">ROZPOCZNIJ SESJĘ</button>
-						<div id="timer" class="mt-6 text-5xl font-mono text-amber-300">00:00:00</div>
-					</div>
+					<div><button onclick="startSession()" class="d2-btn px-10 py-6 text-2xl font-black tracking-widest">ROZPOCZNIJ SESJĘ</button><div id="timer" class="mt-6 text-5xl font-mono text-amber-300">00:00:00</div></div>
 				</div>
 			</div>
 
@@ -248,7 +238,6 @@ func dashboardHandler(c *gin.Context) {
 			</div>
 		</div>
 
-		<!-- MODAL -->
 		<div id="logModal" class="hidden fixed inset-0 bg-black/95 flex items-center justify-center z-50">
 			<div class="d2-panel w-full max-w-4xl mx-4">
 				<div class="flex justify-between border-b border-amber-400 pb-4">
@@ -321,7 +310,7 @@ func logRunHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "hr": hr})
 }
 
-// ==================== LEADERBOARDS ====================
+// ==================== LEADERBOARD ====================
 func leaderboardHandler(c *gin.Context) {
 	type L struct {
 		Username string
@@ -363,11 +352,11 @@ var d2rTemplate = `
 	<script src="https://cdn.tailwindcss.com"></script>
 	<style>
 		body { background: radial-gradient(#1c1208, #0a0503); color: #e8d5a3; font-family: system-ui; }
-		.d2-panel { background: linear-gradient(#2c1f14,#1a1109); border: 8px solid #d4af37; box-shadow: 0 0 40px #8b0000; }
-		.d2-btn { background: linear-gradient(#8b5a2b,#5c3a1a); border: 4px solid #d4af37; color: #ffd700; }
-		.d2-btn-big { background: linear-gradient(#b71c1c,#7f0000); border: 6px solid #ffd700; color: #fff; }
+		.d2-panel { background: linear-gradient(#2c1f14,#1a1109); border: 8px solid #d4af37; box-shadow: 0 0 40px #8b0000; padding: 2rem; border-radius: 4px; }
+		.d2-btn { background: linear-gradient(#8b5a2b,#5c3a1a); border: 4px solid #d4af37; color: #ffd700; padding: 12px 24px; font-weight: 900; }
+		.d2-btn-big { background: linear-gradient(#b71c1c,#7f0000); border: 6px solid #ffd700; color: #fff; padding: 20px 40px; font-size: 1.5rem; font-weight: 900; }
 		.rune-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px,1fr)); gap: 14px; }
-		.rune-btn { background:#1c1208; border:4px solid #4a2c0f; transition:all .2s; }
+		.rune-btn { background:#1c1208; border:4px solid #4a2c0f; transition:all .2s; padding: 8px; text-align: center; }
 		.rune-btn:hover { border-color:#ffd700; transform:scale(1.12); }
 	</style>
 </head>
