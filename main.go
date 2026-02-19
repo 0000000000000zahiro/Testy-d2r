@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,8 +15,8 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -50,7 +51,7 @@ type RuneDrop struct {
 
 var (
 	db    *gorm.DB
-	store = cookie.NewStore([]byte("d2r-secret-2026-change-me-in-prod"))
+	store = cookie.NewStore([]byte("d2r-secret-render-2026"))
 
 	areas = []string{
 		"Countess (Hrabina)", "Radament", "Travincal Council", "Lower Kurast (LK)", "Mephisto",
@@ -86,7 +87,7 @@ var (
 		"Thul": "https://static.wikia.nocookie.net/diablo/images/0/0f/Thul_Rune.png/revision/latest/scale-to-width-down/64",
 		"Amn":  "https://static.wikia.nocookie.net/diablo/images/9/9f/Amn_Rune.png/revision/latest/scale-to-width-down/64",
 		"Sol":  "https://static.wikia.nocookie.net/diablo/images/5/5f/Sol_Rune.png/revision/latest/scale-to-width-down/64",
-		"Shael":"https://static.wikia.nocookie.net/diablo/images/3/3f/Shael_Rune.png/revision/latest/scale-to-width-down/64",
+		"Shael": "https://static.wikia.nocookie.net/diablo/images/3/3f/Shael_Rune.png/revision/latest/scale-to-width-down/64",
 		"Dol":  "https://static.wikia.nocookie.net/diablo/images/1/1f/Dol_Rune.png/revision/latest/scale-to-width-down/64",
 		"Hel":  "https://static.wikia.nocookie.net/diablo/images/8/8f/Hel_Rune.png/revision/latest/scale-to-width-down/64",
 		"Io":   "https://static.wikia.nocookie.net/diablo/images/2/2f/Io_Rune.png/revision/latest/scale-to-width-down/64",
@@ -112,7 +113,13 @@ var (
 
 func initDB() {
 	var err error
-	db, err = gorm.Open(sqlite.Open("d2r_tracker.db"), &gorm.Config{})
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		db, err = gorm.Open(postgres.Open(dbURL), &gorm.Config{})
+		log.Println("✅ Połączono z PostgreSQL (Render.com)")
+	} else {
+		db, err = gorm.Open(sqlite.Open("d2r_tracker.db"), &gorm.Config{})
+		log.Println("✅ Używam lokalnego SQLite")
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -121,11 +128,8 @@ func initDB() {
 
 func main() {
 	initDB()
-
 	r := gin.Default()
 	r.Use(sessions.Sessions("d2rsession", store))
-
-	// Statyczne pliki (opcjonalnie własne tło)
 	r.StaticFS("/static", http.FS(staticFS))
 
 	tmpl := template.Must(template.New("").Parse(d2rTemplate))
@@ -133,29 +137,29 @@ func main() {
 
 	r.GET("/", func(c *gin.Context) { c.Redirect(http.StatusFound, "/login") })
 
-	// Auth routes
 	r.GET("/login", loginPage)
 	r.POST("/login", loginHandler)
 	r.GET("/register", registerPage)
 	r.POST("/register", registerHandler)
 	r.GET("/logout", logoutHandler)
 
-	// Protected
 	protected := r.Group("/")
 	protected.Use(authMiddleware())
 	{
 		protected.GET("/dashboard", dashboardHandler)
-		protected.POST("/start-session", startSessionHandler)
 		protected.POST("/log-run", logRunHandler)
 		protected.GET("/leaderboard", leaderboardHandler)
 		protected.GET("/my-stats", myStatsHandler)
 	}
 
-	log.Println("🚀 D2R Farm Tracker (D2R style) uruchomiony na http://localhost:8080")
-	r.Run(":8080")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Printf("🚀 D2R Farm Tracker v2.1 gotowy na porcie %s", port)
+	r.Run(":" + port)
 }
 
-// ====================== MIDDLEWARE ======================
 func authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		session := sessions.Default(c)
@@ -168,36 +172,26 @@ func authMiddleware() gin.HandlerFunc {
 	}
 }
 
-// ====================== HANDLERS ======================
+// ==================== AUTH HANDLERS ====================
 func loginPage(c *gin.Context) {
 	c.HTML(http.StatusOK, "layout", gin.H{"Title": "Logowanie", "Content": loginHTML})
 }
-
 func registerPage(c *gin.Context) {
 	c.HTML(http.StatusOK, "layout", gin.H{"Title": "Rejestracja", "Content": registerHTML})
 }
-
 func loginHandler(c *gin.Context) {
 	username := c.PostForm("username")
 	password := c.PostForm("password")
-
 	var user User
-	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
-		c.HTML(http.StatusUnauthorized, "layout", gin.H{"Title": "Logowanie", "Content": loginHTML + `<p class="text-red-500 text-center mt-4">❌ Błędne dane</p>`})
+	if err := db.Where("username = ?", username).First(&user).Error; err != nil || bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) != nil {
+		c.HTML(http.StatusUnauthorized, "layout", gin.H{"Title": "Logowanie", "Content": loginHTML + `<p class="text-red-500 text-center mt-6">❌ Błędne dane</p>`})
 		return
 	}
-	if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) != nil {
-		c.HTML(http.StatusUnauthorized, "layout", gin.H{"Title": "Logowanie", "Content": loginHTML + `<p class="text-red-500 text-center mt-4">❌ Błędne hasło</p>`})
-		return
-	}
-
 	session := sessions.Default(c)
 	session.Set("user_id", user.ID)
 	session.Save()
-
 	c.Redirect(http.StatusFound, "/dashboard")
 }
-
 func registerHandler(c *gin.Context) {
 	username := c.PostForm("username")
 	password := c.PostForm("password")
@@ -205,13 +199,10 @@ func registerHandler(c *gin.Context) {
 		c.HTML(http.StatusBadRequest, "layout", gin.H{"Title": "Rejestracja", "Content": registerHTML + `<p class="text-red-500">Wypełnij pola</p>`})
 		return
 	}
-
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	db.Create(&User{Username: username, Password: string(hashed)})
-
 	c.Redirect(http.StatusFound, "/login")
 }
-
 func logoutHandler(c *gin.Context) {
 	session := sessions.Default(c)
 	session.Clear()
@@ -219,54 +210,50 @@ func logoutHandler(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/login")
 }
 
+// ==================== DASHBOARD + STATS ====================
 func dashboardHandler(c *gin.Context) {
 	userID := sessions.Default(c).Get("user_id").(uint)
 
-	var totalRuns, totalHR int64
+	var totalRuns, totalHR, totalUniques, totalSets int64
 	db.Model(&Run{}).Where("user_id = ?", userID).Count(&totalRuns)
 	db.Model(&Run{}).Where("user_id = ?", userID).Select("COALESCE(SUM(hr_count),0)").Scan(&totalHR)
+	db.Model(&Run{}).Where("user_id = ?", userID).Select("COALESCE(SUM(uniques),0)").Scan(&totalUniques)
+	db.Model(&Run{}).Where("user_id = ?", userID).Select("COALESCE(SUM(sets),0)").Scan(&totalSets)
+
+	avgHR := 0.0
+	if totalRuns > 0 {
+		avgHR = float64(totalHR) / float64(totalRuns)
+	}
 
 	content := fmt.Sprintf(`
 		<div class="flex flex-col items-center">
-			<div class="d2-panel w-full max-w-5xl">
-				<div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-					<div class="text-center">
-						<div class="text-6xl font-black text-amber-400 drop-shadow-d2">%d</div>
-						<div class="text-xl tracking-widest text-red-400">RUNÓW</div>
-					</div>
-					<div class="text-center">
-						<div class="text-6xl font-black text-emerald-400 drop-shadow-d2">%d</div>
-						<div class="text-xl tracking-widest text-red-400">HIGH RUNES</div>
-					</div>
-					<div class="text-center">
-						<button onclick="startSession()" 
-								class="d2-btn px-12 py-6 text-2xl font-black tracking-widest">
-							ROZPOCZNIJ SESJĘ
-						</button>
+			<div class="d2-panel w-full max-w-6xl mx-auto">
+				<div class="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+					<div><div class="text-7xl font-black text-amber-400">%d</div><div class="text-xl tracking-widest">RUNÓW</div></div>
+					<div><div class="text-7xl font-black text-emerald-400">%d</div><div class="text-xl tracking-widest">HIGH RUNES</div></div>
+					<div><div class="text-7xl font-black text-amber-400">%.2f</div><div class="text-xl tracking-widest">HR / RUN</div></div>
+					<div>
+						<button onclick="startSession()" class="d2-btn px-10 py-6 text-2xl font-black tracking-widest">ROZPOCZNIJ SESJĘ</button>
 						<div id="timer" class="mt-6 text-5xl font-mono text-amber-300">00:00:00</div>
 					</div>
 				</div>
 			</div>
 
-			<button onclick="showLogModal()" 
-					class="mt-12 d2-btn-big text-3xl px-16 py-8">
-				📜 ZALOGUJ NOWĄ RUNDĘ
-			</button>
+			<button onclick="showLogModal()" class="mt-12 d2-btn-big text-4xl px-24 py-10 font-black">📜 ZALOGUJ NOWĄ RUNDĘ</button>
 
-			<div class="mt-16 w-full max-w-5xl">
-				<h2 class="text-4xl font-black text-center mb-8 text-amber-400">SIATKA RUN</h2>
-				<div class="rune-grid">
-					%s
-				</div>
+			<div class="mt-16 w-full max-w-6xl grid grid-cols-3 gap-8">
+				<div class="d2-panel text-center"><div class="text-6xl font-black">%d</div><div class="text-amber-300">UNIKATÓW</div></div>
+				<div class="d2-panel text-center"><div class="text-6xl font-black">%d</div><div class="text-amber-300">ZESTAWÓW</div></div>
+				<div class="d2-panel text-center"><div class="text-6xl font-black text-emerald-400">%.1f%%</div><div class="text-amber-300">EFFICIENCY</div></div>
 			</div>
 		</div>
 
 		<!-- MODAL -->
-		<div id="logModal" class="hidden fixed inset-0 bg-black/90 flex items-center justify-center z-50">
-			<div class="d2-panel max-w-4xl w-full mx-4">
-				<div class="flex justify-between items-center border-b border-amber-400 pb-4">
-					<h3 class="text-3xl font-black text-amber-400">LOG RUN – %s</h3>
-					<button onclick="hideLogModal()" class="text-4xl text-red-400 hover:text-red-600">✕</button>
+		<div id="logModal" class="hidden fixed inset-0 bg-black/95 flex items-center justify-center z-50">
+			<div class="d2-panel w-full max-w-4xl mx-4">
+				<div class="flex justify-between border-b border-amber-400 pb-4">
+					<h3 class="text-4xl font-black text-amber-400">LOG RUN</h3>
+					<button onclick="hideLogModal()" class="text-5xl text-red-400">✕</button>
 				</div>
 				<form id="runForm" onsubmit="submitRun(event)" class="mt-8 space-y-8">
 					<div class="grid grid-cols-2 gap-6">
@@ -274,366 +261,190 @@ func dashboardHandler(c *gin.Context) {
 						<select name="difficulty" class="d2-input">%s</select>
 					</div>
 					<div class="grid grid-cols-2 gap-6">
-						<div>
-							<label class="block text-amber-300 mb-2">Unikatów</label>
-							<input type="number" name="uniques" value="0" class="d2-input w-full">
-						</div>
-						<div>
-							<label class="block text-amber-300 mb-2">Zestawów</label>
-							<input type="number" name="sets" value="0" class="d2-input w-full">
-						</div>
+						<div><label class="block text-amber-300">Unikatów</label><input type="number" name="uniques" value="0" class="d2-input w-full"></div>
+						<div><label class="block text-amber-300">Zestawów</label><input type="number" name="sets" value="0" class="d2-input w-full"></div>
 					</div>
-
 					<div>
-						<label class="block text-amber-300 mb-3">Wybrane runy tej rundy</label>
-						<div id="selectedRunes" class="flex flex-wrap gap-3 min-h-[60px]"></div>
+						<label class="block text-amber-300 mb-3">Runy (klikaj na siatce poniżej)</label>
+						<div id="selectedRunes" class="flex flex-wrap gap-3 min-h-[70px]"></div>
 					</div>
-
-					<button type="submit" class="d2-btn-big w-full text-3xl py-6">✅ ZAPISZ RUNDĘ</button>
+					<button type="submit" class="d2-btn-big w-full py-8 text-3xl">✅ ZAPISZ RUNDĘ</button>
 				</form>
 			</div>
 		</div>
-	`, generateRuneGridHTML(), "HELL", generateAreaOptions(), generateDiffOptions())
 
-	c.HTML(http.StatusOK, "layout", gin.H{
-		"Title":   "Dashboard – D2R Farm Tracker",
-		"Content": template.HTML(content),
-	})
+		<div class="mt-16 w-full max-w-6xl">
+			<h2 class="text-4xl font-black text-center mb-8 text-amber-400">SIATKA RUN</h2>
+			<div class="rune-grid">%s</div>
+		</div>
+	`, generateAreaOptions(), generateDiffOptions(), generateRuneGridHTML())
+
+	c.HTML(http.StatusOK, "layout", gin.H{"Title": "Dashboard – D2R Farm Tracker", "Content": template.HTML(content)})
 }
 
+func generateAreaOptions() string { var s strings.Builder; for _, a := range areas { s.WriteString(fmt.Sprintf(`<option value="%s">%s</option>`, a, a)) }; return s.String() }
+func generateDiffOptions() string { var s strings.Builder; for _, d := range difficulties { sel := ""; if d == "Hell" { sel = ` selected` }; s.WriteString(fmt.Sprintf(`<option value="%s"%s>%s</option>`, d, sel, d)) }; return s.String() }
 func generateRuneGridHTML() string {
 	var sb strings.Builder
 	for _, r := range runeOrder {
-		icon := runeIcons[r]
-		sb.WriteString(fmt.Sprintf(`
-			<button onclick="addRuneToCurrent('%s')" 
-					class="rune-btn group">
-				<img src="%s" class="w-12 h-12 mx-auto group-hover:scale-110 transition">
-				<div class="text-[10px] text-amber-400 mt-1">%s</div>
-			</button>
-		`, r, icon, r))
+		sb.WriteString(fmt.Sprintf(`<button onclick="addRuneToCurrent('%s')" class="rune-btn"><img src="%s" class="w-14 h-14"><div class="text-xs mt-1">%s</div></button>`, r, runeIcons[r], r))
 	}
 	return sb.String()
 }
 
-func generateAreaOptions() string {
-	var sb strings.Builder
-	for _, a := range areas {
-		sb.WriteString(fmt.Sprintf(`<option value="%s">%s</option>`, a, a))
-	}
-	return sb.String()
-}
-
-func generateDiffOptions() string {
-	var sb strings.Builder
-	for _, d := range difficulties {
-		selected := ""
-		if d == "Hell" {
-			selected = ` selected`
-		}
-		sb.WriteString(fmt.Sprintf(`<option value="%s"%s>%s</option>`, d, selected, d))
-	}
-	return sb.String()
-}
-
-func startSessionHandler(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-}
-
+// ==================== LOG RUN ====================
 func logRunHandler(c *gin.Context) {
 	userID := sessions.Default(c).Get("user_id").(uint)
-
 	area := c.PostForm("area")
 	diff := c.PostForm("difficulty")
 	uniques, _ := strconv.Atoi(c.PostForm("uniques"))
 	sets, _ := strconv.Atoi(c.PostForm("sets"))
 
-	// Runy przychodzą jako JSON z JS (selectedRunes)
-	var drops []struct {
-		Rune string `json:"rune"`
-		Qty  int    `json:"qty"`
-	}
-	jsonData := c.PostForm("runes")
-	if jsonData != "" {
-		json.Unmarshal([]byte(jsonData), &drops)
+	var drops []struct{ Rune string `json:"rune"`; Qty int `json:"qty"` }
+	if j := c.PostForm("runes"); j != "" {
+		json.Unmarshal([]byte(j), &drops)
 	}
 
-	hrCount := 0
+	hr := 0
 	for _, d := range drops {
 		if highRunes[d.Rune] {
-			hrCount += d.Qty
+			hr += d.Qty
 		}
 	}
 
-	run := Run{
-		UserID:     userID,
-		Area:       area,
-		Difficulty: diff,
-		Uniques:    uniques,
-		Sets:       sets,
-		HRCount:    hrCount,
-		SessionSec: 0, // można rozszerzyć o timer
-		Timestamp:  time.Now(),
-	}
+	run := Run{UserID: userID, Area: area, Difficulty: diff, Uniques: uniques, Sets: sets, HRCount: hr, Timestamp: time.Now()}
 	db.Create(&run)
-
 	for _, d := range drops {
 		db.Create(&RuneDrop{RunID: run.ID, Rune: d.Rune, Qty: d.Qty})
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "saved", "hr": hrCount})
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "hr": hr})
 }
 
+// ==================== LEADERBOARDS ====================
 func leaderboardHandler(c *gin.Context) {
-	// Prosty leaderboard – top 10 HR
-	type Leader struct {
+	type L struct {
 		Username string
 		TotalHR  int
 		Runs     int
+		AvgHR    float64
 	}
-	var leaders []Leader
-	db.Raw(`
-		SELECT u.username, SUM(r.hr_count) as total_hr, COUNT(r.id) as runs
-		FROM runs r JOIN users u ON r.user_id = u.id
-		GROUP BY u.id ORDER BY total_hr DESC LIMIT 10
-	`).Scan(&leaders)
+	var leaders []L
+	db.Raw(`SELECT u.username, SUM(r.hr_count) AS total_hr, COUNT(*) AS runs, AVG(r.hr_count) AS avg_hr 
+			FROM runs r JOIN users u ON r.user_id = u.id 
+			GROUP BY u.id ORDER BY total_hr DESC LIMIT 15`).Scan(&leaders)
 
-	// Generowanie HTML tabeli w D2R stylu
 	var rows strings.Builder
 	for i, l := range leaders {
-		rows.WriteString(fmt.Sprintf(`
-			<tr class="border-b border-amber-900 hover:bg-red-950/30">
-				<td class="py-4 px-6 font-black">#%d</td>
-				<td class="py-4 px-6">%s</td>
-				<td class="py-4 px-6 text-emerald-400 text-right">%d HR</td>
-				<td class="py-4 px-6 text-amber-400 text-right">%d runów</td>
-			</tr>
-		`, i+1, l.Username, l.TotalHR, l.Runs))
+		rows.WriteString(fmt.Sprintf(`<tr class="border-b border-amber-900"><td class="py-4 px-6 font-black">#%d</td><td>%s</td><td class="text-emerald-400">%d HR</td><td>%d runów</td><td>%.2f HR/run</td></tr>`, i+1, l.Username, l.TotalHR, l.Runs, l.AvgHR))
 	}
 
-	content := fmt.Sprintf(`<div class="d2-panel"><table class="w-full">%s</table></div>`, rows.String())
-
-	c.HTML(http.StatusOK, "layout", gin.H{
-		"Title":   "Leaderboard HR",
-		"Content": template.HTML(content),
-	})
+	content := fmt.Sprintf(`<div class="d2-panel"><h2 class="text-4xl font-black mb-8 text-center">🏆 LEADERBOARD HR</h2><table class="w-full">%s</table></div>`, rows.String())
+	c.HTML(http.StatusOK, "layout", gin.H{"Title": "Leaderboard", "Content": template.HTML(content)})
 }
 
+// ==================== MY STATS ====================
 func myStatsHandler(c *gin.Context) {
-	// Wykres Chart.js – przykładowe dane (w realu pobierz z DB)
-	content := `
-		<div class="d2-panel">
-			<canvas id="hrChart" class="w-full h-96"></canvas>
-		</div>
-		<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-		<script>
-			const ctx = document.getElementById('hrChart');
-			new Chart(ctx, {
-				type: 'line',
-				data: {
-					labels: ['Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob', 'Niedz'],
-					datasets: [{
-						label: 'High Runes / dzień',
-						data: [3, 8, 12, 5, 15, 22, 9],
-						borderColor: '#c9a14d',
-						backgroundColor: 'rgba(201,161,77,0.2)',
-						tension: 0.4,
-						borderWidth: 4
-					}]
-				},
-				options: { scales: { y: { grid: { color: '#4a2c0f' } } } }
-			});
-		</script>
-	`
-
-	c.HTML(http.StatusOK, "layout", gin.H{
-		"Title":   "Moje statystyki",
-		"Content": template.HTML(content),
-	})
+	content := `<div class="d2-panel"><canvas id="chart" class="w-full h-96"></canvas></div>
+	<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+	<script>
+		new Chart(document.getElementById("chart"), {type:"line", data:{labels:["Pon","Wt","Śr","Czw","Pt","Sob","Niedz"], datasets:[{label:"HR", data:[4,11,7,18,25,32,14], borderColor:"#c9a14d", tension:0.4}]}, options:{scales:{y:{grid:{color:"#4a2c0f"}}}}});
+	</script>`
+	c.HTML(http.StatusOK, "layout", gin.H{"Title": "Moje statystyki", "Content": template.HTML(content)})
 }
 
-// ====================== TEMPLATES ======================
+// ==================== TEMPLATES ====================
 var d2rTemplate = `
 <!DOCTYPE html>
 <html lang="pl">
 <head>
 	<meta charset="UTF-8">
-	<title>{{.Title}} - D2R Farm Tracker</title>
+	<title>{{.Title}}</title>
 	<script src="https://cdn.tailwindcss.com"></script>
-	<script src="https://unpkg.com/htmx.org@1.9.12"></script>
-	<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Creepster&family=UnifrakturMaguntia&display=swap">
 	<style>
-		@layer base {
-			body {
-				background: radial-gradient(circle at center, #1c1208 0%, #0a0503 100%);
-				background-image: url('https://i.imgur.com/2vL9k8P.png'); /* subtelne D2 texture */
-				background-size: cover;
-				color: #e8d5a3;
-				font-family: system-ui, sans-serif;
-			}
-			.d2-panel {
-				background: linear-gradient(#2c1f14, #1a1109);
-				border: 6px solid #d4af37;
-				box-shadow: 0 0 30px #8b0000, inset 0 0 20px rgba(212,175,55,0.3);
-				padding: 2rem;
-				border-radius: 4px;
-			}
-			.d2-btn {
-				background: linear-gradient(to bottom, #8b5a2b, #5c3a1a);
-				border: 4px solid #d4af37;
-				color: #ffd700;
-				text-shadow: 2px 2px 0 #4a1c1c;
-				transition: all 0.2s;
-			}
-			.d2-btn:hover {
-				background: linear-gradient(to bottom, #b38b4d, #8b5a2b);
-				transform: scale(1.05);
-			}
-			.d2-btn-big {
-				background: linear-gradient(to bottom, #b71c1c, #7f0000);
-				border: 6px solid #ffd700;
-				color: #fff;
-				text-shadow: 3px 3px 0 #000;
-			}
-			.d2-input {
-				background: #1a1109;
-				border: 3px solid #d4af37;
-				color: #e8d5a3;
-				padding: 12px;
-				font-size: 1.1rem;
-			}
-			.rune-btn {
-				background: #1c1208;
-				border: 3px solid #4a2c0f;
-				transition: all 0.15s;
-			}
-			.rune-btn:hover {
-				border-color: #ffd700;
-				transform: translateY(-4px) scale(1.1);
-				box-shadow: 0 0 15px #ffd700;
-			}
-			.drop-shadow-d2 {
-				text-shadow: 3px 3px 0 #4a1c1c, -2px -2px 0 #4a1c1c;
-			}
-			.rune-grid {
-				display: grid;
-				grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
-				gap: 12px;
-			}
-		}
+		body { background: radial-gradient(#1c1208, #0a0503); color: #e8d5a3; font-family: system-ui; }
+		.d2-panel { background: linear-gradient(#2c1f14,#1a1109); border: 8px solid #d4af37; box-shadow: 0 0 40px #8b0000; }
+		.d2-btn { background: linear-gradient(#8b5a2b,#5c3a1a); border: 4px solid #d4af37; color: #ffd700; }
+		.d2-btn-big { background: linear-gradient(#b71c1c,#7f0000); border: 6px solid #ffd700; color: #fff; }
+		.rune-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px,1fr)); gap: 14px; }
+		.rune-btn { background:#1c1208; border:4px solid #4a2c0f; transition:all .2s; }
+		.rune-btn:hover { border-color:#ffd700; transform:scale(1.12); }
 	</style>
 </head>
 <body class="min-h-screen">
-	<div class="max-w-screen-xl mx-auto p-6">
+	<div class="max-w-screen-2xl mx-auto p-8">
 		<header class="flex justify-between items-center mb-12 border-b border-amber-400 pb-6">
-			<div class="flex items-center gap-4">
-				<div class="text-6xl font-black tracking-[6px] text-[#c9a14d] drop-shadow-d2">DIABLO</div>
-				<div class="text-5xl text-red-500 font-black tracking-widest">II</div>
+			<div class="flex items-center gap-6">
+				<div class="text-7xl font-black text-[#c9a14d] tracking-widest">DIABLO</div>
+				<div class="text-6xl text-red-600 font-black">II</div>
 			</div>
-			<div class="flex gap-6 text-xl">
-				<a href="/dashboard" class="hover:text-amber-400 transition">DASHBOARD</a>
-				<a href="/leaderboard" class="hover:text-amber-400 transition">LEADERBOARD</a>
-				<a href="/my-stats" class="hover:text-amber-400 transition">MOJE STATY</a>
-				<a href="/logout" class="text-red-400 hover:text-red-600">WYLOGUJ</a>
+			<div class="flex gap-10 text-2xl">
+				<a href="/dashboard" class="hover:text-amber-400">Dashboard</a>
+				<a href="/leaderboard" class="hover:text-amber-400">Leaderboard</a>
+				<a href="/my-stats" class="hover:text-amber-400">Moje staty</a>
+				<a href="/logout" class="text-red-500">Wyloguj</a>
 			</div>
 		</header>
-
 		{{.Content}}
 	</div>
 
 	<script>
 		let currentRunes = [];
-
-		function addRuneToCurrent(rune) {
-			const qty = prompt("Ile sztuk " + rune + "?", "1");
-			if (!qty) return;
-			const num = parseInt(qty);
-			if (num > 0) {
-				currentRunes.push({rune: rune, qty: num});
-				renderSelectedRunes();
+		function addRuneToCurrent(r) {
+			let qty = prompt("Ile sztuk "+r+"?", "1");
+			if(qty && parseInt(qty)>0) {
+				currentRunes.push({rune:r, qty:parseInt(qty)});
+				renderSelected();
 			}
 		}
-
-		function renderSelectedRunes() {
-			const container = document.getElementById("selectedRunes");
-			container.innerHTML = currentRunes.map((item, i) => `
-				<div onclick="removeRune(${i})" class="flex items-center gap-3 bg-zinc-900 border border-amber-400 px-4 py-2 rounded cursor-pointer hover:bg-red-900">
-					<img src="${window.runeIcons[item.rune] || ''}" class="w-8 h-8">
-					<span>${item.rune} × ${item.qty}</span>
-				</div>
-			`).join('');
+		function renderSelected() {
+			let html = currentRunes.map((item,i) => `<div onclick="removeRune(\( {i})" class="flex items-center gap-3 bg-zinc-900 border border-amber-400 px-5 py-3 rounded cursor-pointer hover:bg-red-900"> \){item.rune} × ${item.qty}</div>`).join('');
+			document.getElementById("selectedRunes").innerHTML = html || "Kliknij runy powyżej...";
 		}
-
-		function removeRune(i) {
-			currentRunes.splice(i, 1);
-			renderSelectedRunes();
-		}
-
-		function showLogModal() {
-			currentRunes = [];
-			renderSelectedRunes();
-			document.getElementById("logModal").classList.remove("hidden");
-		}
-
-		function hideLogModal() {
-			document.getElementById("logModal").classList.add("hidden");
-		}
-
+		function removeRune(i) { currentRunes.splice(i,1); renderSelected(); }
+		function showLogModal() { currentRunes = []; renderSelected(); document.getElementById("logModal").classList.remove("hidden"); }
+		function hideLogModal() { document.getElementById("logModal").classList.add("hidden"); }
 		function submitRun(e) {
 			e.preventDefault();
-			const formData = new FormData(e.target);
-			formData.append("runes", JSON.stringify(currentRunes));
-
-			fetch("/log-run", {method: "POST", body: formData})
-				.then(r => r.json())
-				.then(data => {
-					alert("✅ Runda zapisana! HR: " + data.hr);
-					hideLogModal();
-					location.reload();
-				});
+			const form = new FormData(e.target);
+			form.append("runes", JSON.stringify(currentRunes));
+			fetch("/log-run", {method:"POST", body:form}).then(r=>r.json()).then(d=>{
+				alert("✅ Zapisano! HR: "+d.hr);
+				hideLogModal();
+				location.reload();
+			});
 		}
-
-		// Timer sesji (prosty JS)
-		let timerInterval;
+		let seconds = 0, timer;
 		function startSession() {
-			let seconds = 0;
-			clearInterval(timerInterval);
-			timerInterval = setInterval(() => {
-				seconds++;
-				const h = Math.floor(seconds / 3600).toString().padStart(2,'0');
-				const m = Math.floor((seconds % 3600) / 60).toString().padStart(2,'0');
-				const s = (seconds % 60).toString().padStart(2,'0');
-				document.getElementById("timer").textContent = h + ":" + m + ":" + s;
-			}, 1000);
-			alert("⏳ Sesja rozpoczęta! Loguj runy kiedy chcesz.");
+			clearInterval(timer);
+			seconds = 0;
+			timer = setInterval(()=>{ seconds++; let h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),s=seconds%60; document.getElementById("timer").textContent = h.toString().padStart(2,'0')+":"+m.toString().padStart(2,'0')+":"+s.toString().padStart(2,'0'); },1000);
+			alert("⏳ Sesja rozpoczęta!");
 		}
-
-		// Globalne ikony dla JS
-		window.runeIcons = {{.RuneIconsJSON}};
 	</script>
 </body>
 </html>
 `
 
 var loginHTML = `
-<div class="max-w-md mx-auto mt-32 d2-panel">
-	<h1 class="text-5xl font-black text-center mb-10 text-amber-400">LOGOWANIE</h1>
-	<form method="POST" action="/login" class="space-y-6">
-		<input name="username" placeholder="Nazwa bohatera" required class="d2-input w-full">
-		<input name="password" type="password" placeholder="Hasło" required class="d2-input w-full">
-		<button type="submit" class="d2-btn-big w-full py-6 text-2xl">WEJDŹ DO SANKTUARIUM</button>
+<div class="max-w-md mx-auto mt-32 d2-panel p-12">
+	<h1 class="text-5xl font-black text-center mb-12 text-amber-400">LOGOWANIE</h1>
+	<form method="POST" action="/login" class="space-y-8">
+		<input name="username" placeholder="Nazwa bohatera" required class="d2-input w-full p-5 text-xl">
+		<input name="password" type="password" placeholder="Hasło" required class="d2-input w-full p-5 text-xl">
+		<button type="submit" class="d2-btn-big w-full py-8 text-3xl">WEJDŹ DO SANKTUARIUM</button>
 	</form>
-	<p class="text-center mt-8"><a href="/register" class="text-amber-400 hover:underline">Nowy bohater? Zarejestruj się</a></p>
+	<p class="text-center mt-10"><a href="/register" class="text-amber-400 text-xl">Nowy bohater? Zarejestruj się</a></p>
 </div>
 `
 
 var registerHTML = `
-<div class="max-w-md mx-auto mt-32 d2-panel">
-	<h1 class="text-5xl font-black text-center mb-10 text-amber-400">NOWY BOHATER</h1>
-	<form method="POST" action="/register" class="space-y-6">
-		<input name="username" placeholder="Nazwa bohatera" required class="d2-input w-full">
-		<input name="password" type="password" placeholder="Hasło" required class="d2-input w-full">
-		<button type="submit" class="d2-btn-big w-full py-6 text-2xl">STWÓRZ POSTAĆ</button>
+<div class="max-w-md mx-auto mt-32 d2-panel p-12">
+	<h1 class="text-5xl font-black text-center mb-12 text-amber-400">STWÓRZ BOHATERA</h1>
+	<form method="POST" action="/register" class="space-y-8">
+		<input name="username" placeholder="Nazwa bohatera" required class="d2-input w-full p-5 text-xl">
+		<input name="password" type="password" placeholder="Hasło" required class="d2-input w-full p-5 text-xl">
+		<button type="submit" class="d2-btn-big w-full py-8 text-3xl">STWÓRZ POSTAĆ</button>
 	</form>
 </div>
 `
